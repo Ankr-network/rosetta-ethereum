@@ -101,6 +101,7 @@ mocks:
 	${ADDLICENCE_SCRIPT} .;
 
 ### AnkrNetwork
+
 .PHONY: docker-build
 docker-build:
 	@echo "build docker image"
