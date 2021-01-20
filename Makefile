@@ -99,3 +99,32 @@ mocks:
 	mockery --dir services --all --case underscore --outpkg services --output mocks/services;
 	mockery --dir ethereum --all --case underscore --outpkg ethereum --output mocks/ethereum;
 	${ADDLICENCE_SCRIPT} .;
+
+### AnkrNetwork
+.PHONY: docker-build
+docker-build:
+	@echo "build docker image"
+	@BRANCH_NAME=$(shell git rev-parse --abbrev-ref HEAD); \
+	if [[ $$BRANCH_NAME == "develop" ]]; then \
+		ENV="stage"; \
+	elif [[ $$BRANCH_NAME == "master" ]]; then \
+		ENV="prod"; \
+	else \
+		ENV="feat"; \
+	fi; \
+	docker build --build-arg GITHUB_USER=$$GITHUB_USER --build-arg GITHUB_TOKEN=$$GITHUB_TOKEN -t ankrnetwork/rosetta-ethereum:$$ENV .
+
+.PHONY: docker-build
+docker-push: docker-build
+	@echo "tag & push image"
+	@BRANCH_NAME=$(shell git rev-parse --abbrev-ref HEAD); SHA1_SHORT=$(shell git rev-parse --short HEAD); DATE=$(shell date +%Y%m%d%H%M%S); \
+	if [[ $$BRANCH_NAME == "develop" ]]; then \
+		ENV="stage"; \
+	elif [[ $$BRANCH_NAME == "master" ]]; then \
+		ENV="prod"; \
+	else \
+		ENV="feat"; \
+	fi;  \
+	docker tag ankrnetwork/rosetta-ethereum:$$ENV  ankrnetwork/rosetta-ethereum:$$SHA1_SHORT; \
+	docker push ankrnetwork/rosetta-ethereum:$$SHA1_SHORT; \
+	docker push ankrnetwork/rosetta-ethereum:$$ENV;

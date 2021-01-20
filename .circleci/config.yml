@@ -1,103 +1,92 @@
-# Copyright 2020 Coinbase, Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 version: 2.1
-executors:
-  default:
-    docker:
-      - image: circleci/golang:1.15
-        user: root # go directory is owned by root
-    working_directory: /go/src/github.com/coinbase/rosetta-ethereum
-    environment:
-      - GO111MODULE: "on"
 
-fast-checkout: &fast-checkout
-  attach_workspace:
-    at: /go
+executors:
+  docker-executor:
+    docker:
+      - image: ankrnetwork/alpine:v1.0.0
+  machine-executor:
+    machine: true
+
+commands:
+  kubeconfig:
+    steps:
+      - run:
+          name: copy kubeconfig to base image
+          command: data=$(cat /root/.kube/oentext ); crypt aes -k=$kubekey -e=false -d=$data > /root/.kube/config
+
+  deploy:
+    steps:
+      - run:
+          name: deploy
+          command: kubectl apply -f deployment/
 
 jobs:
-  setup:
-    executor:
-      name: default
+  build-with-machine:
+    executor: machine-executor
     steps:
       - checkout
-      - run: make deps
-      - persist_to_workspace:
-          root: /go
-          paths:
-            - src
-            - bin
-            - pkg/mod/cache
-  test:
-    executor:
-      name: default
-    steps:
-      - *fast-checkout
-      - run: make test
-  lint:
-    executor:
-      name: default
-    steps:
-      - *fast-checkout
-      - run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.32.2
-      - run: make lint
-  check-license:
-    executor:
-      name: default
-    steps:
-      - *fast-checkout
-      - run: make check-license
-  check-format:
-    executor:
-      name: default
-    steps:
-      - *fast-checkout
-      - run: make check-format
-  coverage:
-    executor:
-      name: default
-    steps:
-      - *fast-checkout
-      - run: make coverage 
-  salus:
-    machine: true
+      - run: docker login -u $DOCKER_HUB_USER -p $DOCKER_HUB_TOKEN
+      - run: make docker-push
+
+  deploy-stage:
+    executor: docker-executor
+    working_directory: /tmp/project
     steps:
       - checkout
-      - run: make salus
+      - kubeconfig
+      - run:
+          name: swith stage.hub
+          command: kubectl config use-context stage.hub.k8s.ankr.network
+      - run:
+          name: Modify deploy yaml
+          command: |
+            SHA1_SHORT=$(git rev-parse --short HEAD)
+            for i in $(ls ./deployment/); do
+              sed -i 's/{{ replicaCount }}/1/g' ./deployment/$i
+              sed -i "s/{{ tag }}/$SHA1_SHORT/g" ./deployment/$i
+            done
+      - deploy
+
+  deploy-prod:
+    executor: docker-executor
+    working_directory: /tmp/project
+    steps:
+      - checkout
+      - kubeconfig
+      - run:
+          name: swith hub
+          command: kubectl config use-context hub.k8s.ankr.network
+      - run:
+          name: Modify deploy yaml
+          command: |
+            SHA1_SHORT=$(git rev-parse --short HEAD)
+            for i in $(ls ./deployment/); do
+              sed -i 's/{{ replicaCount }}/2/g' ./deployment/$i
+              sed -i "s/{{ tag }}/$SHA1_SHORT/g" ./deployment/$i
+            done
+      - deploy
 
 workflows:
   version: 2
-  build:
+  build-deploy:
     jobs:
-      - setup
-      - test:
+      - build-with-machine:
+          context: cicd
+          filters:
+            branches:
+              ignore:
+                - /feature\/.*/
+      - deploy-stage:
+          context: cicd
           requires:
-            - setup
-      - lint:
+            - build-with-machine
+          filters:
+            branches:
+              only: develop
+      - deploy-prod:
+          context: cicd
           requires:
-            - setup
-      - check-license:
-          requires:
-            - setup
-      - check-format:
-          requires:
-            - setup
-      - coverage:
-          requires:
-            - setup
-      - salus
-
-notify:
-  webhooks:
-    - url: https://coveralls.io/webhook?repo_token=$COVERALLS_TOKEN
+            - build-with-machine
+          filters:
+            branches:
+              only: master
